@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import logging
 import os
 import sys
@@ -36,7 +37,13 @@ import textstat
 from filelock import FileLock
 from tqdm import tqdm
 
-# 导入 TRLX 相关模块
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.readability_utils import (
+    get_readability_level,
+    compute_readability_metrics,
+    postprocess_text,
+)
+
 try:
     from trlx.models.modeling_ppo import AutoModelForSeq2SeqLMWithHydraValueHead
 except ImportError:
@@ -79,54 +86,8 @@ class DataArguments:
     preprocessing_num_workers: Optional[int] = field(default=None, metadata={"help": "The number of processes to use for preprocessing."})
     overwrite_cache: bool = field(default=False, metadata={"help": "Overwrite the cached preprocessed datasets."})
 
-def postprocess_text(preds, labels):
-    preds = [pred.strip() for pred in preds]
-    labels = [label.strip() for label in labels]
-    preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
-    labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
-    return preds, labels
 
-def get_readability_level(flesch_score):
-    """Categorize text based on Flesch reading ease score and return both category and numerical value."""
-    if flesch_score >= 80:
-        return ("elementary", 1)
-    elif 60 <= flesch_score < 80:
-        return ("middle", 2)
-    elif 40 <= flesch_score < 60:
-        return ("high", 3)
-    else:
-        return ("college", 4)
-
-def compute_readability_metrics(texts):
-    """Compute readability metrics for a list of texts."""
-    flesch_scores = [textstat.flesch_reading_ease(text) for text in texts]
-    readability_info = [get_readability_level(score) for score in flesch_scores]
-    readability_levels = [info[0] for info in readability_info]
-    numerical_levels = [info[1] for info in readability_info]
-    
-    # Calculate average scores
-    avg_flesch = np.mean(flesch_scores) if flesch_scores else 0
-    avg_numerical_level = np.mean(numerical_levels) if numerical_levels else 0
-    
-    # Calculate distribution of readability levels
-    level_counts = {
-        "elementary": readability_levels.count("elementary"),
-        "middle": readability_levels.count("middle"),
-        "high": readability_levels.count("high"),
-        "college": readability_levels.count("college")
-    }
-    
-    return {
-        "avg_flesch_score": round(avg_flesch, 4),
-        "avg_numerical_level": round(avg_numerical_level, 4),
-        "readability_distribution": level_counts,
-        "elementary_percentage": round(level_counts["elementary"] / len(texts) * 100, 2) if texts else 0,
-        "middle_percentage": round(level_counts["middle"] / len(texts) * 100, 2) if texts else 0,
-        "high_percentage": round(level_counts["high"] / len(texts) * 100, 2) if texts else 0,
-        "college_percentage": round(level_counts["college"] / len(texts) * 100, 2) if texts else 0,
-    }
-
-def compute_metrics(pred_ids, label_ids, tokenizer):
+def _compute_metrics(pred_ids, label_ids, tokenizer):
     pred_ids = np.where(pred_ids != -100, pred_ids, tokenizer.pad_token_id)
     label_ids = np.where(label_ids != -100, label_ids, tokenizer.pad_token_id)
     decoded_preds = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
@@ -134,21 +95,17 @@ def compute_metrics(pred_ids, label_ids, tokenizer):
 
     decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
 
-    # ROUGE 指标
     metric_rouge = evaluate.load("rouge")
     rouge_result = metric_rouge.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
     rouge_result = {k: round(v * 100, 4) for k, v in rouge_result.items()}
 
-    # Compute readability metrics for predictions
     readability_result = compute_readability_metrics(decoded_preds)
-    
-    # Compute readability metrics for original labels (for comparison)
+
     label_readability = compute_readability_metrics(decoded_labels)
     readability_result["label_avg_flesch_score"] = label_readability["avg_flesch_score"]
     readability_result["label_avg_numerical_level"] = label_readability["avg_numerical_level"]
     readability_result["label_readability_distribution"] = label_readability["readability_distribution"]
 
-    # 生成长度
     prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in pred_ids]
     result = {"gen_len": round(np.mean(prediction_lens), 4)}
 
@@ -164,7 +121,6 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    # 设置日志
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
@@ -175,7 +131,6 @@ def main():
 
     logger.info(f"PPO inference parameters: {training_args}")
 
-    # 加载 PPO 模型和 tokenizer
     model = AutoModelForSeq2SeqLMWithHydraValueHead.from_pretrained(
         model_args.ppo_checkpoint,
         cache_dir=model_args.cache_dir,
@@ -187,7 +142,6 @@ def main():
         use_auth_token=True if model_args.use_auth_token else None,
     )
 
-    # 加载测试数据集
     if data_args.dataset_name is not None:
         raw_datasets = load_dataset(
             data_args.dataset_name,
@@ -215,7 +169,6 @@ def main():
         max_predict_samples = min(len(predict_dataset), data_args.max_predict_samples)
         predict_dataset = predict_dataset.select(range(max_predict_samples))
 
-    # 数据预处理
     prefix = data_args.source_prefix if data_args.source_prefix is not None else ""
     column_names = predict_dataset.column_names
     text_column = data_args.text_column if data_args.text_column else column_names[0]
@@ -223,7 +176,7 @@ def main():
     if text_column not in column_names:
         raise ValueError(f"`text_column` '{data_args.text_column}' not found in dataset columns: {', '.join(column_names)}")
     if summary_column is None or summary_column not in column_names:
-        logger.warning(f"No valid `summary_column` specified or found. Metrics requiring references (e.g., ROUGE) will be skipped.")
+        logger.warning("No valid `summary_column` specified or found. Metrics requiring references will be skipped.")
         compute_metrics_flag = False
     else:
         compute_metrics_flag = True
@@ -231,18 +184,18 @@ def main():
     def preprocess_function(examples):
         inputs = [prefix + inp for inp in examples[text_column]]
         model_inputs = tokenizer(
-            inputs, 
-            max_length=data_args.max_source_length, 
-            padding="max_length", 
-            truncation=True, 
+            inputs,
+            max_length=data_args.max_source_length,
+            padding="max_length",
+            truncation=True,
             return_tensors="pt",
             return_attention_mask=True,
         )
         if compute_metrics_flag:
             labels = tokenizer(
-                text_target=examples[summary_column], 
-                max_length=data_args.val_max_target_length, 
-                padding="max_length", 
+                text_target=examples[summary_column],
+                max_length=data_args.val_max_target_length,
+                padding="max_length",
                 truncation=True,
                 return_tensors="pt",
             )
@@ -259,7 +212,6 @@ def main():
         desc="Tokenizing dataset",
     )
 
-    # 进行推理并收集预测结果
     model.eval()
     model.to(training_args.device)
     predictions = []
@@ -277,9 +229,9 @@ def main():
                     pad_token_id=tokenizer.pad_token_id,
                 )
                 outputs = torch.nn.functional.pad(
-                    outputs, 
-                    (0, data_args.val_max_target_length - outputs.shape[1]), 
-                    value=tokenizer.pad_token_id, 
+                    outputs,
+                    (0, data_args.val_max_target_length - outputs.shape[1]),
+                    value=tokenizer.pad_token_id,
                 )
             decoded_outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True, clean_up_tokenization_spaces=True)
             predictions.extend([pred.strip() for pred in decoded_outputs])
@@ -288,8 +240,7 @@ def main():
                 labels = torch.tensor(batch["labels"]).unsqueeze(0)
                 all_label_ids.extend(labels.cpu().numpy())
             pbar.update(1)
-    
-    # 保存预测结果
+
     output_prediction_file = os.path.join(training_args.output_dir, "ppo_generated_predictions.txt")
     os.makedirs(training_args.output_dir, exist_ok=True)
     with open(output_prediction_file, "w") as writer:
@@ -298,16 +249,13 @@ def main():
     logger.info(f"PPO predictions saved to {output_prediction_file}")
 
     if compute_metrics_flag:
-        print(f"Number of predictions: {len(all_pred_ids)}, Number of references: {len(all_label_ids)}")
+        logger.info(f"Number of predictions: {len(all_pred_ids)}, Number of references: {len(all_label_ids)}")
         assert len(all_pred_ids) == len(all_label_ids), "Mismatch between predictions and references!"
 
-        # 计算指标
-        metrics = compute_metrics(np.array(all_pred_ids), np.array(all_label_ids), tokenizer)
+        metrics = _compute_metrics(np.array(all_pred_ids), np.array(all_label_ids), tokenizer)
         logger.info(f"PPO inference metrics: {metrics}")
-        # 保存指标到文件
         metrics_file = os.path.join(training_args.output_dir, "ppo_metrics.json")
         with open(metrics_file, "w") as f:
-            import json
             json.dump(metrics, f, indent=2)
         logger.info(f"Metrics saved to {metrics_file}")
     else:

@@ -1,17 +1,19 @@
 #!/bin/bash
+# Run PPO model inference for all 4 readability levels
+# Usage: bash scripts/inference_rl_readability.sh
+set -euo pipefail
 
 source ~/anaconda3/etc/profile.d/conda.sh
-
 conda activate readability_summ
 
-export TOKENIZERS_PARALLELISM=false  # 添加这一行
+export TOKENIZERS_PARALLELISM=false
 
-VAL_FILE='val.json'
-MODEL_PATH='../train/rl/trlx/checkpoint-diverse-readability-word-level/best_checkpoint/hf_model'
+VAL_FILE=${VAL_FILE:-"data/val_summary_parallel.json"}
+MODEL_PATH=${MODEL_PATH:-"checkpoints/rl_readability/best_checkpoint/hf_model"}
 
-# 任务 1：Flesch Kincaid 得分 90
+# Task 1: Elementary (target Flesch ~90)
 OUTPUT_DIR='outputs/1/'
-CUDA_VISIBLE_DEVICES=0 python -u run_readability_ppo.py \
+CUDA_VISIBLE_DEVICES=0 python -u src/inference/inference_rl_readability.py \
  --ppo_checkpoint ${MODEL_PATH} \
  --output_dir ${OUTPUT_DIR} \
  --text_column input_text \
@@ -25,9 +27,9 @@ CUDA_VISIBLE_DEVICES=0 python -u run_readability_ppo.py \
 
 P1=$!
 
-# 任务 2：Flesch Kincaid 得分 70
+# Task 2: Middle school (target Flesch ~70)
 OUTPUT_DIR='outputs/2/'
-CUDA_VISIBLE_DEVICES=1 python -u run_readability_ppo.py \
+CUDA_VISIBLE_DEVICES=1 python -u src/inference/inference_rl_readability.py \
  --ppo_checkpoint ${MODEL_PATH} \
  --output_dir ${OUTPUT_DIR} \
  --text_column input_text \
@@ -43,9 +45,9 @@ P2=$!
 
 wait $P1 $P2
 
-# 任务 3：Flesch Kincaid 得分 50
+# Task 3: High school (target Flesch ~50)
 OUTPUT_DIR='outputs/3/'
-CUDA_VISIBLE_DEVICES=0 python -u run_readability_ppo.py \
+CUDA_VISIBLE_DEVICES=0 python -u src/inference/inference_rl_readability.py \
  --ppo_checkpoint ${MODEL_PATH} \
  --output_dir ${OUTPUT_DIR} \
  --text_column input_text \
@@ -59,9 +61,9 @@ CUDA_VISIBLE_DEVICES=0 python -u run_readability_ppo.py \
 
 P3=$!
 
-# 任务 4：Flesch Kincaid 得分 20
+# Task 4: College (target Flesch ~20)
 OUTPUT_DIR='outputs/4/'
-CUDA_VISIBLE_DEVICES=1 python -u run_readability_ppo.py \
+CUDA_VISIBLE_DEVICES=1 python -u src/inference/inference_rl_readability.py \
  --ppo_checkpoint ${MODEL_PATH} \
  --output_dir ${OUTPUT_DIR} \
  --text_column input_text \
@@ -75,6 +77,6 @@ CUDA_VISIBLE_DEVICES=1 python -u run_readability_ppo.py \
 
 P4=$!
 
-wait $P1 $P2 $P3 $P4
+wait $P3 $P4
 
 conda deactivate

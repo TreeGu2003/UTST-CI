@@ -5,17 +5,18 @@
 <div align="center">
 
 [![arXiv](https://img.shields.io/badge/Arxiv-2601.01060-b31b1b.svg?logo=arXiv)](http://arxiv.org/abs/2601.01060)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
 
 </div>
 
 # Quick Links
 + [Overview](#overview)
-
 + [Requirements](#requirements)
-
 + [Data Preparation](#data-preparation)
-
 + [Experiments](#experiments)
++ [Results](#results)
++ [Citation](#citation)
 
 ## Overview
 
@@ -40,20 +41,41 @@ The framework supports both Supervised Fine-Tuning (SFT) and Reinforcement Learn
 
 ## Requirements
 
-Install the required dependencies:
+- Python >= 3.8
+- PyTorch 2.0.1 with CUDA 11.8
+- 2+ GPUs recommended for distributed training
+
+### Installation
 
 ```bash
+# Create conda environment (recommended)
+conda create -n readability_summ python=3.8
+conda activate readability_summ
+
+# Install PyTorch with CUDA 11.8
+pip install torch==2.0.1+cu118 -f https://download.pytorch.org/whl/cu118/torch_stable.html
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
 Main dependencies include:
-- PyTorch 2.0.1
 - Transformers 4.46.3
 - trlx 0.7.0
 - DeepSpeed (for distributed training)
 - Various NLP evaluation libraries (bert_score, textstat, etc.)
 
-**Note**: The requirements.txt contains some duplicate entries that should be cleaned up.
+### Environment Variables
+
+The following environment variables can be used to configure the project:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SFT_MODEL_DIR` | Path to the SFT checkpoint for RL training | `checkpoints/sft_readability` |
+| `OPENAI_API_KEY` | API key for GPT-based data generation | (empty) |
+| `OPENAI_BASE_URL` | Base URL for the OpenAI-compatible API | `https://api.openai.com/v1/` |
+| `TRAIN_FILE` | Path to training data | `data/train_summary_prompt_parallel.json` |
+| `VAL_FILE` | Path to validation data | `data/val_summary_prompt_parallel.json` |
 
 ## Data Preparation
 
@@ -75,6 +97,10 @@ Place your data files in the `data/` directory:
 You can use the preprocessing script to generate readability-controlled data:
 
 ```bash
+# Set your API key first
+export OPENAI_API_KEY="your-api-key"
+export OPENAI_BASE_URL="https://api.openai.com/v1/"
+
 python src/preprocess/generate_readability_by_gpt.py
 ```
 
@@ -86,7 +112,7 @@ Similar data preparation process for sentiment transfer tasks. Prepare parallel 
 
 ### Training
 
-#### Supervised Fine-Tuning (SFT)
+#### 1. Supervised Fine-Tuning (SFT)
 
 Train the model using supervised fine-tuning:
 
@@ -94,17 +120,20 @@ Train the model using supervised fine-tuning:
 bash scripts/train_sft_readability.sh
 ```
 
-This script uses DeepSpeed for distributed training with the following key parameters:
+Key parameters (configurable via environment variables or script editing):
 - Learning rate: 1e-4
 - Batch size: 8 per device
 - Max source length: 1024
 - Training epochs: 20
 
-#### Reinforcement Learning (RL)
+#### 2. Reinforcement Learning (RL)
 
-Train with reinforcement learning for better control:
+Train with PPO reinforcement learning for better controllability:
 
 ```bash
+# Set the SFT checkpoint path
+export SFT_MODEL_DIR="checkpoints/sft_readability"
+
 bash scripts/train_rl_readability.sh
 ```
 
@@ -116,17 +145,17 @@ Run inference on test data:
 # SFT model inference
 bash scripts/inference_sft_readability.sh
 
-# RL model inference
+# RL model inference (runs all 4 readability levels in parallel)
 bash scripts/inference_rl_readability.sh
 ```
 
 ### Evaluation
 
 The project includes various evaluation metrics:
-- ROUGE scores for text quality
-- BERTScore for semantic similarity
-- Readability metrics (Flesch-Kincaid, etc.)
-- Feature extraction and cosine similarity analysis
+- **ROUGE scores** for text quality
+- **BERTScore** for semantic similarity
+- **Readability metrics**: Flesch-Kincaid, Gunning Fog, Coleman-Liau
+- **Style similarity**: TF-IDF based feature extraction and cosine similarity
 
 ### Example Outputs
 
@@ -151,17 +180,20 @@ The project includes various evaluation metrics:
 
 ```
 UTST-CI/
-├── data/              # Training and validation data
-├── figs/              # Figures and visualizations
-├── scripts/           # Training and inference scripts
+├── data/                # Training and validation data (not tracked)
+├── figs/                # Figures and visualizations
+├── scripts/             # Training and inference scripts
 │   ├── train_sft_readability.sh
 │   ├── train_rl_readability.sh
 │   ├── inference_sft_readability.sh
 │   └── inference_rl_readability.sh
 ├── src/
-│   ├── preprocess/    # Data preprocessing scripts
-│   ├── train/         # Training scripts
-│   └── inference/     # Inference scripts
+│   ├── utils/           # Shared utilities
+│   │   ├── readability_utils.py   # Readability metrics and helpers
+│   │   └── style_scorer.py        # TF-IDF style similarity scorer
+│   ├── preprocess/      # Data preprocessing scripts
+│   ├── train/           # Training scripts (SFT + RL)
+│   └── inference/       # Inference scripts
 ├── requirements.txt
 └── README.md
 ```
@@ -183,4 +215,3 @@ If you use this code in your research, please cite:
 ## License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-

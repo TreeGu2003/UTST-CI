@@ -2,9 +2,9 @@ from typing import List
 from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForMaskedLM
-from readability import Readability
 import numpy as np
 import sys
+import os
 eps = sys.float_info.epsilon
 import math
 
@@ -18,12 +18,15 @@ from trlx.data.configs import (
     TRLConfig,
 )
 from trlx.models.modeling_ppo import PPOConfig
-import os
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 import textstat
 
-model_dir = '/home/cunhuan/code/controllable-readability-summarization/src/train/mnt/hd3/checkpoints/summary'  # select the checkpoint from the prompt-based methods
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.readability_utils import calc_nd, CATEGORY_RANGES
+from utils.style_scorer import StyleSimilarityScorer
+
+# Model path: set via environment variable or use default
+model_dir = os.environ.get("SFT_MODEL_DIR", "checkpoints/sft_readability")
 
 config = TRLConfig(
     train=TrainConfig(
@@ -99,117 +102,38 @@ def get_flesch(text):
     return score
 
 import random
-import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import pandas as pd
-from collections import defaultdict
-
-class StyleSimilarityScorer:
-    def __init__(self, style_word_files):
-        """
-        初始化评分器
-        :param style_word_files: 字典，格式为 {'style1': 'path1.csv', 'style2': 'path2.csv'}
-        """
-        self.style_words = {}
-        self.style_vectors = defaultdict(dict)
-        self.vectorizer = TfidfVectorizer(stop_words='english')
-        
-        # 加载各个风格的词汇表
-        for style, filepath in style_word_files.items():
-            df = pd.read_csv(filepath)
-            self.style_words[style] = set(df['word'].head(1000).tolist())  # 取前1000个词
-            
-        # 为每个风格创建参考文本（包含该风格的所有特征词）
-        self.reference_texts = {
-            style: ' '.join(words) 
-            for style, words in self.style_words.items()
-        }
-        
-        # 训练TF-IDF向量化器（在所有风格词汇上）
-        all_words = []
-        for words in self.style_words.values():
-            all_words.extend(words)
-        self.vectorizer.fit([' '.join(all_words)])
-        
-        # 为每个风格创建TF-IDF向量
-        for style, text in self.reference_texts.items():
-            self.style_vectors[style] = self.vectorizer.transform([text])
-
-    def calculate_style_similarity(self, text, target_style):
-        """
-        计算文本与指定风格词汇库的相似度
-        :param text: 要评分的文本
-        :param target_style: 要比较的目标风格
-        :return: 相似度分数 (0-1)
-        """
-        if target_style not in self.style_vectors:
-            raise ValueError(f"未知的风格: {target_style}. 可用风格: {list(self.style_vectors.keys())}")
-        
-        # 向量化输入文本
-        text_vector = self.vectorizer.transform([text])
-        
-        # 计算与目标风格的余弦相似度
-        similarity = cosine_similarity(text_vector, self.style_vectors[target_style])[0][0]
-        
-        # 确保分数在0-1范围内（余弦相似度理论上已经是，但可能有浮点误差）
-        return max(0.0, min(1.0, similarity))
-    
-    def calculate_style_probabilities(self, text, temperature=0.01):
-        """
-        改进版概率计算，通过温度系数保持差异
-        :param temperature: 越小则差异越明显 (推荐0.01-0.5)
-        """
-        raw_scores = {
-            style: self.calculate_style_similarity(text, style)
-            for style in self.style_vectors.keys()
-        }
-        scores = np.array(list(raw_scores.values()))
-        
-        # 带温度系数的softmax
-        scaled_scores = scores / temperature
-        exp_scores = np.exp(scaled_scores - np.max(scaled_scores))
-        probabilities = exp_scores / exp_scores.sum()
-        
-        return {
-            style: float(prob)
-            for style, prob in zip(raw_scores.keys(), probabilities)
-        }
-
-style_files = {
-        'elementary': 'readability_style_differences/elementary_specific_words.csv',
-        'middle': 'readability_style_differences/middle_specific_words.csv',
-        'high': 'readability_style_differences/high_specific_words.csv',
-        'college': 'readability_style_differences/college_specific_words.csv'
-    }
-
-readability_scorer = StyleSimilarityScorer(style_files)
-
-def change_category(input_data):
-    new_data = []
-    categories = [
-        ("elementary school students", 90),
-        ("middle school students", 70),
-        ("high school students", 50),
-        ("college students", 20)
-    ]
-    for text in input_data:
-        category = random.choice(categories)
-        category_name, _ = category
-        # new_text = f"rewrite the following text for {category_name}:\n\n" + text
-        new_text = "rewrite the following text for " + category_name + ":\n\n" + text
-        new_data.append(new_text)
-    return new_data
-
-sigma = 10
-def calc_nd(value, mean):
-    return 1 / (sigma * np.sqrt(2 * np.pi)) * np.exp(- (value - mean) ** 2 / (2 * sigma ** 2)) / 0.039894228040143274
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
-import os
+
+style_files = {
+    'elementary': 'readability_style_differences/elementary_specific_words.csv',
+    'middle': 'readability_style_differences/middle_specific_words.csv',
+    'high': 'readability_style_differences/high_specific_words.csv',
+    'college': 'readability_style_differences/college_specific_words.csv'
+}
+
+readability_scorer = StyleSimilarityScorer(style_files)
+
+# Category name to target Flesch score mapping
+CATEGORY_FLESCH_TARGETS = {
+    "elementary school students": 90,
+    "middle school students": 70,
+    "high school students": 50,
+    "college students": 20,
+}
+
+def change_category(input_data):
+    new_data = []
+    categories = list(CATEGORY_FLESCH_TARGETS.items())
+    for text in input_data:
+        category_name, _ = random.choice(categories)
+        new_text = "rewrite the following text for " + category_name + ":\n\n" + text
+        new_data.append(new_text)
+    return new_data
+
+# BERTScore model setup
 global_model_name = "roberta-large"
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 num_layers = 17
@@ -263,25 +187,20 @@ if __name__ == "__main__":
         word_level_probs = []
         summaries = []
         docs = []
-        category_ranges = {
-            "elementary school students": 90,
-            "middle school students": 70,
-            "high school students": 50,
-            "college students": 20
-        }
 
         for (generated_summary, input_doc) in zip(outputs, prompts):
             category = input_doc.split("rewrite the following text for ")[1].split(":")[0]
-            target_categories.append(category_ranges[category])
+            target_categories.append(CATEGORY_FLESCH_TARGETS[category])
             doc = input_doc.split(":")[1]
             docs.append(doc)
             summaries.append(generated_summary.strip())
 
             try:
                 flesch_scores.append(get_flesch(generated_summary.strip()))
-            except:
+            except Exception as e:
+                logging.warning(f"Failed to compute Flesch score: {e}")
                 flesch_scores.append(0)
-        
+
             probs = readability_scorer.calculate_style_probabilities(generated_summary.strip())
             category_name = category.split(" ")[0]
             word_level_prob = probs[category_name]
@@ -310,7 +229,7 @@ if __name__ == "__main__":
         readability_weight = 0
         bertscore_weight = 1
         word_level_weight = 0
-        
+
         flesch_scores = torch.tensor(flesch_scores)
         all_bertscore_scores = torch.tensor(all_bertscore_scores)
         word_level_probs = torch.tensor(word_level_probs)
@@ -320,8 +239,8 @@ if __name__ == "__main__":
 
         return flesch_scores
 
-    train_file = '../../data/train_summary_prompt_parallel.json'
-    validation_file = '../../data/val_summary_prompt_parallel.json'
+    train_file = os.environ.get("TRAIN_FILE", "../../data/train_summary_prompt_parallel.json")
+    validation_file = os.environ.get("VAL_FILE", "../../data/val_summary_prompt_parallel.json")
     data_files = {"train": train_file, "validation": validation_file}
     dataset = load_dataset("json", data_files=data_files)
     dataset['train'] = dataset['train'].shuffle(seed=42)

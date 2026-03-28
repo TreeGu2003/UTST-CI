@@ -19,7 +19,6 @@ import os
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
-import json
 
 import datasets
 import nltk
@@ -49,7 +48,11 @@ from transformers.utils.versions import require_version
 from bert_score import score as bertscore
 import textstat
 
-os.environ["NCCL_DEBUG"] = "INFO"
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.readability_utils import (
+    get_readability_level,
+    compute_readability_metrics,
+)
 
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/summarization/requirements.txt")
 
@@ -129,49 +132,6 @@ summarization_name_mapping = {
     "wiki_summary": ("article", "highlights"),
     "multi_news": ("document", "summary"),
 }
-
-def get_readability_level(flesch_score):
-    """Categorize text based on Flesch reading ease score and return both category and numerical value."""
-    if flesch_score >= 80:
-        return ("elementary", 1)
-    elif 60 <= flesch_score < 80:
-        return ("middle", 2)
-    elif 40 <= flesch_score < 60:
-        return ("high", 3)
-    else:
-        return ("college", 4)
-
-def compute_readability_metrics(texts):
-    """Compute readability metrics for a list of texts."""
-    flesch_scores = [textstat.flesch_reading_ease(text) for text in texts]
-    readability_info = [get_readability_level(score) for score in flesch_scores]
-    readability_levels = [info[0] for info in readability_info]
-    numerical_levels = [info[1] for info in readability_info]
-    
-    # Calculate average scores
-    avg_flesch = np.mean(flesch_scores) if flesch_scores else 0
-    avg_numerical_level = np.mean(numerical_levels) if numerical_levels else 0
-    
-    # Calculate distribution of readability levels
-    level_counts = {
-        "elementary": readability_levels.count("elementary"),
-        "middle": readability_levels.count("middle"),
-        "high": readability_levels.count("high"),
-        "college": readability_levels.count("college")
-    }
-    
-    return {
-        "avg_flesch_score": round(avg_flesch, 4),
-        "avg_numerical_level": round(avg_numerical_level, 4),
-        "readability_distribution_elementary": level_counts["elementary"],
-        "readability_distribution_middle": level_counts["middle"],
-        "readability_distribution_high": level_counts["high"],
-        "readability_distribution_college": level_counts["college"],
-        "elementary_percentage": round(level_counts["elementary"] / len(texts) * 100, 2) if texts else 0,
-        "middle_percentage": round(level_counts["middle"] / len(texts) * 100, 2) if texts else 0,
-        "high_percentage": round(level_counts["high"] / len(texts) * 100, 2) if texts else 0,
-        "college_percentage": round(level_counts["college"] / len(texts) * 100, 2) if texts else 0,
-    }
 
 def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, Seq2SeqTrainingArguments))
@@ -347,11 +307,8 @@ def main():
             train_dataset = train_dataset.select(range(max_train_samples))
         with training_args.main_process_first(desc="train dataset map pre-processing"):
             train_dataset = train_dataset.map(
-                preprocess_function,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                remove_columns=column_names,
-                load_from_cache_file=not data_args.overwrite_cache,
+                preprocess_function, batched=True, num_proc=data_args.preprocessing_num_workers,
+                remove_columns=column_names, load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on train dataset",
             )
 
@@ -365,11 +322,8 @@ def main():
             eval_dataset = eval_dataset.select(range(max_eval_samples))
         with training_args.main_process_first(desc="validation dataset map pre-processing"):
             eval_dataset = eval_dataset.map(
-                preprocess_function,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                remove_columns=column_names,
-                load_from_cache_file=not data_args.overwrite_cache,
+                preprocess_function, batched=True, num_proc=data_args.preprocessing_num_workers,
+                remove_columns=column_names, load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on validation dataset",
             )
 
@@ -383,26 +337,18 @@ def main():
             predict_dataset = predict_dataset.select(range(max_predict_samples))
         with training_args.main_process_first(desc="prediction dataset map pre-processing"):
             predict_dataset = predict_dataset.map(
-                preprocess_function,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                remove_columns=column_names,
-                load_from_cache_file=not data_args.overwrite_cache,
+                preprocess_function, batched=True, num_proc=data_args.preprocessing_num_workers,
+                remove_columns=column_names, load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on prediction dataset",
             )
 
     label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
     data_collator = DataCollatorForSeq2Seq(
-        tokenizer,
-        model=model,
-        label_pad_token_id=label_pad_token_id,
+        tokenizer, model=model, label_pad_token_id=label_pad_token_id,
         pad_to_multiple_of=8 if training_args.fp16 else None,
     )
 
-    # 加载 ROUGE 指标
     metric_rouge = evaluate.load("rouge")
-    # 加载 BERTScore 指标
-    # metric_bertscore = evaluate.load("bertscore")
 
     def postprocess_text(preds, labels):
         preds = [pred.strip() for pred in preds]
@@ -426,27 +372,13 @@ def main():
         rouge_result = metric_rouge.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
         rouge_result = {k: round(v * 100, 4) for k, v in rouge_result.items()}
 
-        # # 使用本地 roberta-large
-        # P, R, F1 = bertscore(decoded_preds, decoded_labels, lang="en", model_type="../train/rl/trlx/roberta", verbose=False)
-        # bertscore_result = {
-        #     "bertscore_precision": round(P.mean().item() * 100, 4),
-        #     "bertscore_recall": round(R.mean().item() * 100, 4),
-        #     "bertscore_f1": round(F1.mean().item() * 100, 4),
-        # }
-
-        # Compute readability metrics for predictions
         readability_result = compute_readability_metrics(decoded_preds)
-        
-        # Compute readability metrics for original labels (for comparison)
+
         label_readability = compute_readability_metrics(decoded_labels)
         readability_result["label_avg_flesch_score"] = label_readability["avg_flesch_score"]
         readability_result["label_avg_numerical_level"] = label_readability["avg_numerical_level"]
-        readability_result["label_readability_distribution_elementary"] = label_readability["readability_distribution_elementary"]
-        readability_result["label_readability_distribution_middle"] = label_readability["readability_distribution_middle"]
-        readability_result["label_readability_distribution_high"] = label_readability["readability_distribution_high"]
-        readability_result["label_readability_distribution_college"] = label_readability["readability_distribution_college"]
+        readability_result["label_readability_distribution"] = label_readability["readability_distribution"]
 
-        # Existing readability metrics
         flesch_reading_ease = [textstat.flesch_reading_ease(pred) for pred in decoded_preds]
         gunning_fog = [textstat.gunning_fog(pred) for pred in decoded_preds]
         coleman_liau = [textstat.coleman_liau_index(pred) for pred in decoded_preds]
@@ -461,7 +393,6 @@ def main():
         result = {"gen_len": np.mean(prediction_lens)}
 
         result.update(rouge_result)
-        # result.update(bertscore_result)
         result.update(readability_result)
         result.update(additional_readability_result)
 
