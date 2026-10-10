@@ -5,10 +5,13 @@
 <div align="center">
 
 [![arXiv](https://img.shields.io/badge/Arxiv-2601.01060-b31b1b.svg?logo=arXiv)](http://arxiv.org/abs/2601.01060)
+[![ACL Anthology](https://img.shields.io/badge/ACL%20Anthology-EACL%202026%20Findings-blue.svg)](https://aclanthology.org/2026.findings-eacl.133/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
 
 </div>
+
+Our paper has been accepted to **Findings of EACL 2026**! Read the paper on [ACL Anthology](https://aclanthology.org/2026.findings-eacl.133/).
 
 # Quick Links
 + [Overview](#overview)
@@ -203,12 +206,17 @@ UTST-CI/
 If you use this code in your research, please cite:
 
 ```bibtex
-@article{gu2026unsupervised,
+@inproceedings{gu-etal-2026-unsupervised,
   title={Unsupervised Text Style Transfer for Controllable Intensity},
   author={Gu, Shuhuan and Tao, Wenbiao and Ma, Xinchen and He, Kangkang and Guo, Ye and Li, Xiang and Lan, Yunshi},
-  journal={arXiv preprint arXiv:2601.01060},
+  booktitle={Findings of the Association for Computational Linguistics: {EACL} 2026},
+  month=mar,
   year={2026},
-  url={https://arxiv.org/abs/2601.01060}
+  address={Rabat, Morocco},
+  publisher={Association for Computational Linguistics},
+  pages={2570--2584},
+  doi={10.18653/v1/2026.findings-eacl.133},
+  url={https://aclanthology.org/2026.findings-eacl.133/}
 }
 ```
 
